@@ -1,5 +1,5 @@
 """
-Telegram signal boti - GitHub Actions uchun (v2: kechikishga chidamli).
+Telegram signal boti - GitHub Actions uchun (v3: kechikishga chidamli, trend davomida ham signal).
 
 Har ishga tushganda:
   1) narxni Yahoo Finance dan oladi
@@ -21,6 +21,8 @@ from datetime import datetime
 INTERVAL = "15m"
 CANDLE_SEC = 15 * 60
 LOOKBACK = 6            # oxirgi nechta yopilgan shamdan signal qidiriladi (6 = ~90 daqiqa)
+BREAKOUT_N = 20         # yangi balandlik/pastlik: oxirgi nechta shamga nisbatan
+COOLDOWN_CANDLES = 4    # bir signaldan keyin kamida shuncha sham (4 = 1 soat) yangi signal bermaydi
 MAX_MOVE_FRAC = 0.5     # narx signal shamidan SL masofasining shuncha ulushidan ko'p yurgan bo'lsa, signal yuborilmaydi
 # tp / sl - NARX masofasi. XAUUSD: tp 25 = $25 harakat (0.02 lotda ~ $50 foyda), sl 12.5 (~ $25 zarar)
 SYMBOLS = {
@@ -86,23 +88,33 @@ def rsi(vals, period=14):
     return out
 
 
-def find_signals(closes, lookback):
-    """Oxirgi `lookback` ta yopilgan shamning har biri uchun signalni tekshiradi.
+def find_signals(candles, lookback):
+    """Oxirgi `lookback` ta yopilgan sham uchun signalni tekshiradi.
+    Signal 2 xil bo'lishi mumkin (trend yo'nalishida):
+      1) RSI 50 chizig'ini kesib o'tishi (pasayishdan keyin qaytish)
+      2) narx oxirgi BREAKOUT_N ta shamning eng yuqorisi/pastidan o'tishi (pasayishsiz davom etish)
     [(indeks, 'BUY'/'SELL', info), ...] qaytaradi (eskidan yangiga)."""
+    closes = [c["c"] for c in candles]
     e20, e50, e200 = ema(closes, 20), ema(closes, 50), ema(closes, 200)
     r = rsi(closes)
     n = len(closes)
     found = []
-    for i in range(max(1, n - lookback), n):
+    for i in range(max(BREAKOUT_N + 1, n - lookback), n):
         up = e20[i] > e50[i] > e200[i]
         down = e20[i] < e50[i] < e200[i]
         cross_up = r[i - 1] < 50 <= r[i]
         cross_down = r[i - 1] > 50 >= r[i]
+        hi = max(c["h"] for c in candles[i - BREAKOUT_N:i])
+        lo = min(c["l"] for c in candles[i - BREAKOUT_N:i])
+        brk_up = closes[i] > hi and 50 <= r[i] <= 75
+        brk_down = closes[i] < lo and 25 <= r[i] <= 50
         info = f"Trend: {'UP' if up else 'DOWN' if down else 'FLAT'} | RSI: {r[i]:.1f}"
-        if up and cross_up:
-            found.append((i, "BUY", info))
-        elif down and cross_down:
-            found.append((i, "SELL", info))
+        if up and (cross_up or brk_up):
+            why = "RSI qaytishi" if cross_up else "yangi balandlik"
+            found.append((i, "BUY", f"{info} | Sabab: {why}"))
+        elif down and (cross_down or brk_down):
+            why = "RSI qaytishi" if cross_down else "yangi pastlik"
+            found.append((i, "SELL", f"{info} | Sabab: {why}"))
     return found, r[-1], (e20[-1] > e50[-1] > e200[-1]), (e20[-1] < e50[-1] < e200[-1])
 
 
@@ -159,14 +171,14 @@ def process(sym, cfg, candles, state, now):
     if len(closed) < 250:
         print(sym, "ma'lumot yetarli emas")
         return
-    found, rsi_now, up, down = find_signals([c["c"] for c in closed], LOOKBACK)
+    found, rsi_now, up, down = find_signals(closed, LOOKBACK)
     print(f"{sym}: Trend: {'UP' if up else 'DOWN' if down else 'FLAT'} | RSI: {rsi_now:.1f} "
           f"-> {'signal topildi' if found else 'signal yoq'}")
 
     for i, side, info in found:
         bar = closed[i]
-        if bar["t"] <= last_sig.get(sym, 0):
-            continue                         # bu signal allaqachon ko'rib chiqilgan
+        if bar["t"] <= last_sig.get(sym, 0) + COOLDOWN_CANDLES * CANDLE_SEC:
+            continue                         # allaqachon ko'rib chiqilgan yoki juda yaqinda signal bo'lgan
         last_sig[sym] = bar["t"]
         if sym in open_:
             continue                         # shu simvolda ochiq signal bor
