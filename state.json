@@ -1,11 +1,19 @@
 {
- "open": {},
+ "open": {
+  "XAUUSD": {
+   "side": "BUY",
+   "entry": 4115.5,
+   "tp": 4140.5,
+   "sl": 4103.0,
+   "ts": 1794223706
+  }
+ },
  "last_bar": {
   "XAUUSD": 1794001500,
   "EURUSD": 1794002400,
   "GBPUSD": 1794002400
  },
  "last_sig": {
-  "XAUUSD": 1794182400
+  "XAUUSD": 1794222000
  }
 }
